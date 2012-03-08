@@ -5,6 +5,7 @@ import struct
 import logging
 import binascii
 import datetime
+import time
 from StringIO import StringIO as _StringIO
 from OpenSSL import SSL, crypto
 from twisted.internet import reactor, defer
@@ -24,8 +25,12 @@ APNS_SERVER_PORT = 2195
 FEEDBACK_SERVER_SANDBOX_HOSTNAME = "feedback.sandbox.push.apple.com"
 FEEDBACK_SERVER_HOSTNAME = "feedback.push.apple.com"
 FEEDBACK_SERVER_PORT = 2196
+MAX_TOKEN_ID = 1024
 
-app_ids = {} # {'app_id': APNSService()}
+token_id = 0
+current_tokens = {} # dict to hold current token ids
+app_ids = {} # {'app_id': APNSService()} 
+bad_tokens = {} # {'app_id': []}
 
 class StringIO(_StringIO):
   """Add context management protocol to StringIO
@@ -68,17 +73,25 @@ class APNSClientContextFactory(ClientContextFactory):
 
 
 class APNSProtocol(Protocol):
+  def __init__(self):
+    self.appId = None
   def connectionMade(self):
     log.msg('APNSProtocol connectionMade')
     self.factory.addClient(self)
   
   def sendMessage(self, msg):
-    log.msg('APNSProtocol sendMessage msg=%s' % binascii.hexlify(msg))
-    return self.transport.write(msg)
+    self.appId = msg['appid']
+    log.msg('APNSProtocol sendMessage msg=%s' % binascii.hexlify(msg['msg']))
+    return self.transport.write(msg['msg'])
   
   def connectionLost(self, reason):
     log.msg('APNSProtocol connectionLost')
     self.factory.removeClient(self)
+  
+  def dataReceived(self, data):
+    fmt = '!BBI' 
+    message = struct.unpack(fmt, data)
+    self.factory.addToBlacklist( self.appId, current_tokens[message[2]], message[1])
 
 
 class APNSFeedbackHandler(LineReceiver):
@@ -86,7 +99,7 @@ class APNSFeedbackHandler(LineReceiver):
   
   def connectionMade(self):
     log.msg('feedbackHandler connectionMade')
-
+  
   def rawDataReceived(self, data):
     log.msg('feedbackHandler rawDataReceived %s' % binascii.hexlify(data))
     self.io.write(data)
@@ -146,6 +159,13 @@ class APNSClientFactory(ReconnectingClientFactory):
   
   def startedConnecting(self, connector):
     log.msg('APNSClientFactory startedConnecting')
+  
+  def addToBlacklist(self, appId, token, reason):
+    log.msg('WARNING - blacklisting AppId: %s token: %s reason: %s' % (appId, token, reason))
+    global bad_tokens
+    if not bad_tokens.get(appId, None):
+      bad_tokens[appId] = []
+    bad_tokens[appId].append(token)
   
   def buildProtocol(self, addr):
     self.resetDelay()
@@ -270,7 +290,7 @@ class APNSServer(xmlrpc.XMLRPC):
     if not app_id in self.app_ids:
       self.app_ids[app_id] = APNSService(path_to_cert_or_cert, environment, timeout)
   
-  def xmlrpc_notify(self, app_id, token_or_token_list, aps_dict_or_list):
+  def xmlrpc_notify(self, app_id, token_or_token_list, aps_dict_or_list, expiry_or_expiry_list=None):
     """ Sends push notifications to the Apple APNS server. Multiple 
     notifications can be sent by sending pairing the token/notification
     arguments in lists [token1, token2], [notification1, notification2].
@@ -278,17 +298,18 @@ class APNSServer(xmlrpc.XMLRPC):
       Arguments:
           app_id                provisioned app_id to send to
           token_or_token_list   token to send the notification or a list of tokens
-          aps_dict_or_list      notification dicts or a list of notifications
+          aps_dict_or_list      notification dicts or a list of notifications 
+          expiry_or_expiry_list epoch expiry timestamp or list of timestamps, default now
       Returns:
           None
     """
-    
-    d = self.apns_service(app_id).write(
-      encode_notifications(
+    notification_message = encode_notifications(
         [t.replace(' ', '') for t in token_or_token_list] 
           if (type(token_or_token_list) is list)
           else token_or_token_list.replace(' ', ''),
-        aps_dict_or_list))
+        aps_dict_or_list, expiry_or_expiry_list, app_id)
+
+    d = self.apns_service(app_id).write(notification_message)
     if d:
       def _finish_err(r):
         # so far, the only error that could really become of this
@@ -312,22 +333,50 @@ class APNSServer(xmlrpc.XMLRPC):
       lambda r: decode_feedback(r))
 
 
-def encode_notifications(tokens, notifications):
+def encode_notifications(tokens, notifications, expirys, appId):
   """ Returns the encoded bytes of tokens and notifications
   
         tokens          a list of tokens or a string of only one token
-        notifications   a list of notifications or a dictionary of only one
+        notifications   a list of notifications or a dictionary of only one 
+        timeouts        a list of timeout values 
   """
   
-  fmt = "!BH32sH%ds"
-  structify = lambda t, p: struct.pack(fmt % len(p), 0, 32, t, len(p), p)
+  fmt = "!BIIH32sH%ds"
+  structify = lambda t, p, e, ti: struct.pack(fmt % len(p), 1, ti, e, 32, t, len(p), p)
   binaryify = lambda t: t.decode('hex')
   if type(notifications) is dict and type(tokens) in (str, unicode):
     tokens, notifications = ([tokens], [notifications])
-  if type(notifications) is list and type(tokens) is list:
-    return ''.join(map(lambda y: structify(*y), ((binaryify(t), json.dumps(p, separators=(',',':')))
-                                    for t, p in zip(tokens, notifications))))
-
+  if expirys is None:
+    expirys = time.time()
+    expirys = [expirys]*len(notifications)
+  log.msg('expirys: %s' % expirys)
+  log.msg('tokens: %s' % tokens)
+  log.msg('notifications: %s' % notifications)
+  if type(notifications) is list and type(tokens) is list and type(expirys) is list:
+    ids = []
+    global token_id
+    global MAX_TOKEN_ID
+    global bad_tokens
+    for t in tokens:
+      if bad_tokens.get(appId, None):
+        if t in bad_tokens[appId]:
+          log.msg('WARNING - ignoring bad token: %s for appId: %s' % (t, appId))
+          index = tokens.index(t)
+          tokens.pop(index)
+          notifications.pop(index)
+          expirys.pop(index)
+          break
+      if token_id == MAX_TOKEN_ID:
+        token_id = 0
+      token_id += 1
+      current_tokens[token_id] = t
+      ids.append(token_id)
+    messages = zip(tokens, notifications, expirys, ids)
+    log.msg('messages: %s' % messages)
+    return {'appid': appId,
+                'msg': ''.join(map(lambda y: structify(*y), ((binaryify(t), json.dumps(n, separators=(',',':')), int(e), i)
+                                      for t, n, e, i in messages)))}
+                                                                          
 def decode_feedback(binary_tuples):
   """ Returns a list of tuples in (datetime, token_str) format 
   
