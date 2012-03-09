@@ -1,8 +1,6 @@
 from __future__ import with_statement
 import _json as json
-import base64
 import struct
-import logging
 import binascii
 import datetime
 import time
@@ -12,7 +10,7 @@ from twisted.internet import reactor, defer
 from twisted.internet.protocol import (
   ReconnectingClientFactory, ClientFactory, Protocol, ServerFactory)
 from twisted.internet.ssl import ClientContextFactory
-from twisted.application import internet, service
+from twisted.application import service
 from twisted.protocols.basic import LineReceiver
 from twisted.python import log
 from zope.interface import Interface, implements
@@ -57,7 +55,10 @@ class IAPNSService(Interface):
 
 class APNSClientContextFactory(ClientContextFactory):
   def __init__(self, ssl_cert_file):
-    log.msg('APNSClientContextFactory ssl_cert_file=%s' % ssl_cert_file)
+    if 'BEGIN CERTIFICATE' not in ssl_cert_file:
+      log.msg('APNSClientContextFactory ssl_cert_file=%s' % ssl_cert_file)
+    else:
+      log.msg('APNSClientContextFactory ssl_cert_file={FROM_STRING}')
     self.ctx = SSL.Context(SSL.SSLv3_METHOD)
     if 'BEGIN CERTIFICATE' in ssl_cert_file:
       cer = crypto.load_certificate(crypto.FILETYPE_PEM, ssl_cert_file)
@@ -260,9 +261,10 @@ class APNSService(service.Service):
 
 class APNSServer(xmlrpc.XMLRPC):
   def __init__(self):
-    self.allowNone = True
     self.app_ids = app_ids
+    self.use_date_time = True
     self.useDateTime = True
+    xmlrpc.XMLRPC.__init__(self, allowNone=True)
   
   def apns_service(self, app_id):
     if app_id not in app_ids:
@@ -288,6 +290,7 @@ class APNSServer(xmlrpc.XMLRPC):
                               'environments are `sandbox` and `production`' % (
                               environment,))
     if not app_id in self.app_ids:
+      # log.msg('provisioning ' + app_id + ' environment ' + environment)
       self.app_ids[app_id] = APNSService(path_to_cert_or_cert, environment, timeout)
   
   def xmlrpc_notify(self, app_id, token_or_token_list, aps_dict_or_list, expiry_or_expiry_list=None):
@@ -303,13 +306,12 @@ class APNSServer(xmlrpc.XMLRPC):
       Returns:
           None
     """
-    notification_message = encode_notifications(
+    d = self.apns_service(app_id).write(
+      encode_notifications(
         [t.replace(' ', '') for t in token_or_token_list] 
           if (type(token_or_token_list) is list)
           else token_or_token_list.replace(' ', ''),
-        aps_dict_or_list, expiry_or_expiry_list, app_id)
-
-    d = self.apns_service(app_id).write(notification_message)
+        aps_dict_or_list, expiry_or_expiry_list, app_id))
     if d:
       def _finish_err(r):
         # so far, the only error that could really become of this
