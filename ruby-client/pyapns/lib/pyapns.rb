@@ -15,8 +15,8 @@ module PYAPNS
   ## PYAPNS::Client
   ## There's python in my ruby!
   ##
-  ## This is a class used to send notifications, provision applications and
-  ## retrieve feedback using the Apple Push Notification Service.
+  ## This is a class used to send notifications, provision applications query invalid tokens
+  ## and retrieve feedback using the Apple Push Notification Service.
   ##
   ## PYAPNS is a multi-application APS provider, meaning it is possible to send
   ## notifications to any number of different applications from the same application
@@ -107,12 +107,27 @@ module PYAPNS
   ## searching for or comparing the token received in the hexadecimal form returned, 
   ## note that it's lowercase hex.
   ##
+  ## Retrieving Blacklist
+  ##
+  ## The pyapns maintains a blacklist that stores invalid tokens (i.e. sandbox 
+  ## tokens in production) Such invalid tokens cause a drop of the APNS connection.
+  ## PYAPNS will detect the invalid tokens causing a connection drop and add them
+  ## to a blacklist on an Application basis. The blacklist is used to filter out 
+  ## invalid tokens in order to prevent connection drops 
+  ## PYAPNS will return an Array of tokens:
+  ##
+  ##      blacklist = client.blacklist 'cf'
+  ##      => ['token', ... ]
+  ##
+  ## Note that once you query the blacklist, it will be removed so you need to ensure
+  ## that this tokens get de-provisioned from your push token list
+  ##  
   ## Asynchronous Calls
   ##
   ## PYAPNS::Client will, by default, perform no funny stuff and operate entirely
   ## within the calling thread. This means that certain applications may hang when,
   ## say, sending a notification, if only for a fraction of a second. Obviously 
-  ## not a desirable trait, all `provision`, `feedback` and `notify`
+  ## not a desirable trait, all `provision`, `feedback`, `blacklist` and `notify`
   ## methods also take a block, which indicates to the method you want to call
   ## PYAPNS asynchronously, and it will be done so handily in another thread, calling
   ## back your block with a single argument when finished. Note that `notify` and `provision`
@@ -158,6 +173,10 @@ module PYAPNS
 
     def feedback(*args, &block)
       perform_call :feedback, args, :app_id, &block
+    end
+    
+    def blacklist(*args, &block)
+      perform_call :blacklist, args, :app_id, &block
     end
 
     def perform_call(method, splat, *args, &block)

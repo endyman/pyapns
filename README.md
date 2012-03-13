@@ -95,6 +95,17 @@ These methods can be called on the server you started the server on. Be sure you
           Array(Array(Datetime(time_expired), String(token)), ...)
           
 
+### blacklist
+
+      Arguments
+          app_id        String            the application id to retrieve
+		                                          retrieve blacklisted 
+												  (invalid) tokens for
+	
+	  Returns
+		  Array(String(token), ...)
+
+
 ### The Python API
 pyapns also provides a Python API that makes the use of pyapns even simpler. The Python API must be configured before use but configuration files make it easier. The pyapns `client` module currently supports configuration from Django settings and Pylons config. To configure using Django, the following must be present in  your settings file:
 
@@ -192,6 +203,21 @@ Each of these functions can be called synchronously and asynchronously. To make 
 
     Returns:
         List of feedback tuples like [(datetime_expired, token_str), ...]
+
+### `pyapns.client.blacklist(app_id, async=False, callback=None, errback=None)`
+
+    Retrieves a list of blacklisted (invalid) tokens from the pyapns server.
+
+    Arguments:
+        app_id                 the app_id to query
+        async                  pass something truthy to execute the request in 
+                               a background thread
+        callback               a function to be executed with the result 
+        errback                a function to be executed with the error if there
+                               is one during the request
+
+    Returns:
+        List of blacklisted token strings like [String(token), ...]
 
 
 ## The Ruby API

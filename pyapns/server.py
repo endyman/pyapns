@@ -333,7 +333,20 @@ class APNSServer(xmlrpc.XMLRPC):
     
     return self.apns_service(app_id).read().addCallback(
       lambda r: decode_feedback(r))
-
+  
+  def xmlrpc_blacklist(self, app_id):
+    """ Queries blacklisted (invalid) tokens. Returns a list of token Strings. The List in pyapns will be cleared.
+    
+      Arguments:
+          app_id    the app_id to query
+      Returns:
+          Blacklisted token Strings as List
+    """
+    
+    if bad_tokens.get(app_id, None):
+      return bad_tokens.pop(app_id)
+    else:
+      return []
 
 def encode_notifications(tokens, notifications, expirys, appId):
   """ Returns the encoded bytes of tokens and notifications

@@ -110,6 +110,18 @@ def feedback(app_id, async=False, callback=None, errback=None):
   t.daemon = True
   t.start()
 
+
+@default_callback
+@reprovision_and_retry
+def blacklist(app_id, async=False, callback=None, errback=None):
+  args = [app_id]
+  f_args = ['blacklist', args, callback, errback]
+  if not async:
+    return _xmlrpc_thread(*f_args)
+  t = threading.Thread(target=_xmlrpc_thread, args=f_args)
+  t.daemon = True
+  t.start()
+    
 def _xmlrpc_thread(method, args, callback, errback=None):
   if not configure({}):
     raise APNSNotConfigured('APNS Has not been configured.')
